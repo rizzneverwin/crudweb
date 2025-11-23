@@ -134,9 +134,29 @@
     .brand .subtitle { display:none; }
   }
 
-  /* modal modern */
-  .modal-content { border-radius:12px; background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); border:1px solid rgba(255,255,255,0.04); color:inherit; }
+  /* modal modern - default (glass) */
+  .modal-content {
+    border-radius:12px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+    border:1px solid rgba(255,255,255,0.04);
+    color:inherit;
+  }
   body.light .modal-content { background:var(--card-light); border-color: rgba(16,24,40,0.06); }
+
+  /* Make VIEW modal solid and clearly visible (not transparent) */
+  #ViewProductModal .modal-content {
+    background: rgba(6,10,16,0.96) !important;
+    border: 1px solid rgba(255,255,255,0.06) !important;
+    box-shadow: 0 10px 30px rgba(2,6,23,0.6);
+    color: #f8fafc;
+  }
+  body.light #ViewProductModal .modal-content {
+    background: #ffffff !important;
+    border-color: rgba(16,24,40,0.08) !important;
+    color: var(--text-dark);
+  }
+  /* ensure backdrop is strong for view modal */
+  .modal-backdrop.show { opacity: .55; } /* slightly stronger backdrop */
 
   /* inputs */
   .form-control {
@@ -214,7 +234,7 @@
 
     <!-- footer -->
     <div class="d-flex justify-content-between align-items-center mt-3">
-      <div class="small-muted" id="showingInfo">Showing 0 of 0</div>
+      <div class="small-muted" id="showingInfo">Showing 0 to 0 of 0</div>
       <div>
         <button id="prevBtn" class="btn btn-outline-secondary btn-sm me-2"><i class="fa fa-chevron-left"></i> Prev</button>
         <button id="nextBtn" class="btn btn-outline-secondary btn-sm">Next <i class="fa fa-chevron-right"></i></button>
@@ -343,29 +363,33 @@ function currencyFormat(num){
   return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(v);
 }
 function escapeHtml(text) {
-  if(!text && text !== 0) return '';
+  if(text === null || text === undefined) return '';
   return $('<div>').text(String(text)).html();
 }
 
 /* State */
 let currentPage = 1;
-let perPage = parseInt($('#showEntries').val());
+let perPage = parseInt($('#showEntries').val()) || 10;
 let dataList = [];
 
 /* Fetch products */
-function fetchProducts(){
+function fetchProducts(keepPage = false){
   $.ajax({
     url: "/products",
     method: "GET",
     success: function(res){
       dataList = Array.isArray(res) ? res : [];
-      currentPage = 1;
+      // if keepPage true, keep currentPage but ensure it's within bounds
+      if(!keepPage) currentPage = 1;
+      const maxPage = Math.max(1, Math.ceil(dataList.length / perPage || 1));
+      if(currentPage > maxPage) currentPage = maxPage;
       renderTable();
     },
     error: function(e){
       console.error('fetch error', e);
-      // show minimal fallback
       $('#productTable').html('<tr><td colspan="6" class="text-center small-muted">Failed to load data</td></tr>');
+      $('#showingInfo').text('Showing 0 to 0 of 0');
+      $('#prevBtn, #nextBtn').prop('disabled', true);
     }
   });
 }
@@ -374,8 +398,13 @@ function fetchProducts(){
 function renderTable(){
   perPage = parseInt($('#showEntries').val()) || 10;
   const total = dataList.length;
+  const maxPage = Math.max(1, Math.ceil(total / perPage || 1));
+  // clamp currentPage
+  if(currentPage < 1) currentPage = 1;
+  if(currentPage > maxPage) currentPage = maxPage;
+
   const start = (currentPage - 1) * perPage;
-  const end = start + perPage;
+  const end = Math.min(start + perPage, total);
   const slice = dataList.slice(start, end);
   let rows = '';
   let no = start + 1;
@@ -402,27 +431,43 @@ function renderTable(){
   }
 
   $('#productTable').html(rows);
-  $('#showingInfo').text(`Showing ${Math.min(end, total)} of ${total}`);
+  // showing info: Showing x to y of total
+  const displayStart = total === 0 ? 0 : start + 1;
+  const displayEnd = total === 0 ? 0 : end;
+  $('#showingInfo').text(`Showing ${displayStart} to ${displayEnd} of ${total}`);
+
   // disable/enable pagination
   $('#prevBtn').prop('disabled', currentPage <= 1);
-  $('#nextBtn').prop('disabled', currentPage * perPage >= total);
+  $('#nextBtn').prop('disabled', currentPage >= Math.ceil(total / perPage) || total === 0);
 }
 
 /* Init */
-fetchProducts();
+fetchProducts(false);
 
 /* Events */
 $(document).on('change', '#showEntries', function(){
-  perPage = parseInt($(this).val());
-  currentPage = 1;
-  renderTable();
+  perPage = parseInt($(this).val()) || 10;
+  // when perPage changes, keep current page number but ensure bounds
+  const oldStartIndex = (currentPage - 1) * perPage;
+  currentPage = 1; // safer to reset to 1 after changing per-page
+  fetchProducts(false);
 });
 
 $(document).on('click', '#prevBtn', function(){
-  if(currentPage > 1){ currentPage--; renderTable(); }
+  if(currentPage > 1){
+    currentPage--;
+    renderTable();
+    // scroll to top of panel for UX
+    window.scrollTo({ top: document.querySelector('.app').offsetTop - 20, behavior: 'smooth' });
+  }
 });
 $(document).on('click', '#nextBtn', function(){
-  if(currentPage * perPage < dataList.length){ currentPage++; renderTable(); }
+  const total = dataList.length;
+  if(currentPage * perPage < total){
+    currentPage++;
+    renderTable();
+    window.scrollTo({ top: document.querySelector('.app').offsetTop - 20, behavior: 'smooth' });
+  }
 });
 
 /* THEME toggle */
@@ -436,7 +481,7 @@ $('#themeToggle').on('change', function(){
 // start in dark
 $('#themeToggle').prop('checked', true);
 
-/* SAVE */
+/* SAVE (CREATE) */
 $(document).on('click', '#SaveProduct', function(){
   $('#addError').addClass('d-none').html('');
   const payload = {
@@ -454,7 +499,14 @@ $(document).on('click', '#SaveProduct', function(){
     success: function(){
       $('#AddProductModal').modal('hide');
       $('#name,#details,#price,#stock').val('');
-      fetchProducts();
+      // After creating new product, fetch and go to last page so user sees created record
+      $.get("/products", function(list){
+        dataList = Array.isArray(list) ? list : [];
+        const total = dataList.length;
+        perPage = parseInt($('#showEntries').val()) || 10;
+        currentPage = Math.max(1, Math.ceil(total / perPage));
+        renderTable();
+      }).fail(function(){ fetchProducts(true); });
     },
     error: function(xhr){
       if(xhr.status === 422 && xhr.responseJSON && xhr.responseJSON.errors){
@@ -500,7 +552,8 @@ $(document).on('click', '#UpdateProduct', function(){
     headers: { 'X-CSRF-TOKEN': $('meta[name="csrf-token"]').attr('content') },
     success: function(){
       $('#EditProductModal').modal('hide');
-      fetchProducts();
+      // refresh but keep current page
+      fetchProducts(true);
     },
     error: function(xhr){
       if(xhr.status === 422 && xhr.responseJSON && xhr.responseJSON.errors){
@@ -524,7 +577,8 @@ $(document).on('click', '.DeleteBtn', function(){
     method: "DELETE",
     headers: { 'X-CSRF-TOKEN': $('meta[name="csrf-token"]').attr('content') },
     success: function(){
-      fetchProducts();
+      // after deletion, refetch and try to keep current page (or move back if page became empty)
+      fetchProducts(true);
     },
     error: function(){ alert('Error deleting'); }
   });
@@ -534,10 +588,11 @@ $(document).on('click', '.DeleteBtn', function(){
 $(document).on('click', '.ViewBtn', function(){
   const id = $(this).data('id');
   $.get(`/product/edit/${id}`, function(p){
-    $('#view_name').text(p.name);
+    $('#view_name').text(p.name || '-');
     $('#view_details').text(p.details || '-');
     $('#view_price').text(currencyFormat(p.price));
     $('#view_stock').text(p.stock);
+    // show view modal (solid background as CSS above)
     $('#ViewProductModal').modal('show');
   }).fail(function(){ alert('Failed to fetch product'); });
 });
